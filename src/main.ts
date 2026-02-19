@@ -58,6 +58,7 @@ export default class OpenSidebarHover extends Plugin {
   leftRibbon: ExtendedWorkspaceRibbon;
   leftSplitMouseEnterHandler: () => void;
   rightSplitMouseEnterHandler: () => void;
+  private rightTriggerZoneEl: HTMLElement | null = null;
   workspaceChangeTimeout: NodeJS.Timeout | null = null;
   
   // Double-click tracking variables
@@ -214,6 +215,25 @@ export default class OpenSidebarHover extends Plugin {
       if (this.rightSplit.resizeHandleEl) {
         attach(this.rightSplit.resizeHandleEl, "mouseenter", this.rightSplitMouseEnterHandler);
       }
+
+      // Programmatic trigger zone at the right edge of the workspace.
+      // Unlike the left sidebar (which has the always-visible left ribbon as a
+      // trigger), the right sidebar has no equivalent element. When collapsed,
+      // its containerEl is effectively hidden, so mouseenter never fires. This
+      // thin absolutely-positioned div acts as the right-edge hover target.
+      this.rightTriggerZoneEl = document.createElement('div');
+      this.rightTriggerZoneEl.className = 'right-sidebar-trigger-zone';
+      this.rightTriggerZoneEl.style.cssText = `
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: ${this.settings.rightSideBarPixelTrigger}px;
+        height: 100%;
+        z-index: 1;
+        pointer-events: auto;
+      `;
+      this.app.workspace.containerEl.appendChild(this.rightTriggerZoneEl);
+      attach(this.rightTriggerZoneEl, 'mouseenter', this.rightSplitMouseEnterHandler);
     }
 
     // Left ribbon: triggers left expand
@@ -256,6 +276,12 @@ export default class OpenSidebarHover extends Plugin {
       element.removeEventListener(type, handler);
     });
     this.manualEvents = [];
+
+    // Remove trigger zone element
+    if (this.rightTriggerZoneEl) {
+      this.rightTriggerZoneEl.remove();
+      this.rightTriggerZoneEl = null;
+    }
     
     // Clean up hover classes
     if (this.rightSplit?.containerEl) {
