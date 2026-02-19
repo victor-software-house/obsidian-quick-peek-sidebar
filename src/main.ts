@@ -6,6 +6,7 @@ interface ExtendedWorkspaceSplit extends WorkspaceSplit {
   collapsed: boolean;
   expand: () => void;
   collapse: () => void;
+  resizeHandleEl: HTMLElement;
 }
 
 interface ExtendedWorkspaceRibbon extends WorkspaceRibbon {
@@ -57,8 +58,6 @@ export default class OpenSidebarHover extends Plugin {
   leftRibbon: ExtendedWorkspaceRibbon;
   leftSplitMouseEnterHandler: () => void;
   rightSplitMouseEnterHandler: () => void;
-  leftSplitMouseMoveHandler: () => void;
-  rightSplitMouseMoveHandler: () => void;
   workspaceChangeTimeout: NodeJS.Timeout | null = null;
   
   // Double-click tracking variables
@@ -99,6 +98,7 @@ export default class OpenSidebarHover extends Plugin {
 
     return false;
   }
+
 
   handleWorkspaceChange() {
     // Wait to ensure DOM is ready
@@ -184,42 +184,68 @@ export default class OpenSidebarHover extends Plugin {
 
   // Attach manually managed event listeners
   attachManualEvents() {
-    // Helper function to track events for cleanup
     const attach = (element: HTMLElement, type: string, handler: EventListener) => {
       element.addEventListener(type, handler);
       this.manualEvents.push({ element, type, handler });
     };
-    
-    // Implementation with hover class for right split
+
+    // Right split: mouseenter triggers expand when collapsed, maintains hover when expanded
     if (this.rightSplit?.containerEl) {
-      this.rightSplitMouseEnterHandler = () => { 
-        this.isHoveringRight = true; 
+      this.rightSplitMouseEnterHandler = () => {
+        if (this.settings.onlyWhenFocused && !document.hasFocus()) return;
+        this.isHoveringRight = true;
         this.rightSplit.containerEl.addClass('hovered');
+        if (this.settings.rightSidebar && this.rightSplit.collapsed && !this.isPinnedRight) {
+          setTimeout(() => {
+            if (this.isHoveringRight) {
+              if (this.settings.syncLeftRight) {
+                this.expandBoth();
+              } else {
+                this.expandRight();
+              }
+            }
+          }, this.settings.sidebarExpandDelay);
+        }
       };
       attach(this.rightSplit.containerEl, "mouseenter", this.rightSplitMouseEnterHandler);
-      
       attach(this.rightSplit.containerEl, "mouseleave", this.rightSplitMouseLeaveHandler);
-      
-      this.rightSplitMouseMoveHandler = () => this.rightSplit.containerEl.addClass('hovered');
-      attach(this.rightSplit.containerEl, "mousemove", this.rightSplitMouseMoveHandler);
+
+      // Resize handle as additional enter target for collapsed state
+      if (this.rightSplit.resizeHandleEl) {
+        attach(this.rightSplit.resizeHandleEl, "mouseenter", this.rightSplitMouseEnterHandler);
+      }
     }
-    
-    // Implementation with hover class for left split
-    if (this.leftRibbon && this.leftRibbon.containerEl) {
+
+    // Left ribbon: triggers left expand
+    if (this.leftRibbon?.containerEl) {
       attach(this.leftRibbon.containerEl, "mouseenter", this.leftRibbonMouseEnterHandler);
     }
-    
+
+    // Left split: mouseenter triggers expand when collapsed, maintains hover when expanded
     if (this.leftSplit?.containerEl) {
-      this.leftSplitMouseEnterHandler = () => { 
-        this.isHoveringLeft = true; 
+      this.leftSplitMouseEnterHandler = () => {
+        if (this.settings.onlyWhenFocused && !document.hasFocus()) return;
+        this.isHoveringLeft = true;
         this.leftSplit.containerEl.addClass('hovered');
+        if (this.settings.leftSidebar && this.leftSplit.collapsed && !this.isPinnedLeft) {
+          setTimeout(() => {
+            if (this.isHoveringLeft) {
+              if (this.settings.syncLeftRight) {
+                this.expandBoth();
+              } else {
+                this.expandLeft();
+              }
+            }
+          }, this.settings.sidebarExpandDelay);
+        }
       };
       attach(this.leftSplit.containerEl, "mouseenter", this.leftSplitMouseEnterHandler);
-      
       attach(this.leftSplit.containerEl, "mouseleave", this.leftSplitMouseLeaveHandler);
-      
-      this.leftSplitMouseMoveHandler = () => this.leftSplit.containerEl.addClass('hovered');
-      attach(this.leftSplit.containerEl, "mousemove", this.leftSplitMouseMoveHandler);
+
+      // Resize handle as additional enter target for collapsed state
+      if (this.leftSplit.resizeHandleEl) {
+        attach(this.leftSplit.resizeHandleEl, "mouseenter", this.leftSplitMouseEnterHandler);
+      }
     }
   }
 
@@ -286,8 +312,27 @@ export default class OpenSidebarHover extends Plugin {
       this.rightSplit = this.app.workspace.rightSplit as unknown as ExtendedWorkspaceSplit;
       this.leftRibbon = this.app.workspace.leftRibbon as unknown as ExtendedWorkspaceRibbon;
       
-      // Register auto-cleaned events using Obsidian's API
-      this.registerDomEvent(document, "mousemove", this.mouseMoveHandler);
+      // Collapse sidebars when mouse enters the root editing area
+      const rootSplitEl = (this.app.workspace.rootSplit as unknown as ExtendedWorkspaceSplit).containerEl;
+      this.registerDomEvent(rootSplitEl, 'mouseenter', () => {
+        if (this.settings.leftSidebar && !this.isPinnedLeft) {
+          this.isHoveringLeft = false;
+          this.leftSplit?.containerEl?.removeClass('hovered');
+          this.collapseLeft();
+        }
+        if (this.settings.rightSidebar && !this.isPinnedRight) {
+          this.isHoveringRight = false;
+          this.rightSplit?.containerEl?.removeClass('hovered');
+          this.collapseRight();
+        }
+      });
+
+      // Collapse when mouse leaves the window entirely
+      this.registerDomEvent(document, 'mouseleave', () => {
+        if (!this.isPinnedLeft) this.collapseLeft();
+        if (!this.isPinnedRight) this.collapseRight();
+      });
+
       this.registerDomEvent(document, "click", this.documentClickHandler);
       
       // To prevent plugin from breaking after workspace changes
@@ -344,6 +389,8 @@ export default class OpenSidebarHover extends Plugin {
         --sidebar-expand-delay: ${this.settings.sidebarExpandDelay}ms;
         --left-sidebar-max-width: ${this.settings.leftSidebarMaxWidth}px;
         --right-sidebar-max-width: ${this.settings.rightSidebarMaxWidth}px;
+        --left-trigger-width: ${this.settings.leftSideBarPixelTrigger}px;
+        --right-trigger-width: ${this.settings.rightSideBarPixelTrigger}px;
       }
       
       body {
@@ -355,9 +402,6 @@ export default class OpenSidebarHover extends Plugin {
     // Add the style element to the document head
     document.head.appendChild(styleEl);
   }
-
-  // Helpers
-  getEditorWidth = () => this.app.workspace.containerEl.clientWidth;
 
   expandRight() {
     // Start animation by expanding
@@ -460,70 +504,6 @@ export default class OpenSidebarHover extends Plugin {
     }
   }
   
-  // Event handlers
-  mouseMoveHandler = (event: MouseEvent) => {
-    // Skip hover detection if setting is enabled and window is not focused
-    if (this.settings.onlyWhenFocused && !document.hasFocus()) {
-      return;
-    }
-
-    const mouseX = event.clientX;
-
-    // Handle right sidebar hover
-    if (this.settings.rightSidebar) {
-      if (!this.isHoveringRight && this.rightSplit.collapsed && !this.isPinnedRight) {
-        const editorWidth = this.getEditorWidth();
-
-        this.isHoveringRight =
-          mouseX >= editorWidth - this.settings.rightSideBarPixelTrigger;
-
-        if (this.isHoveringRight && this.rightSplit.collapsed) {
-          setTimeout(() => {
-            if (this.isHoveringRight) {
-              if (this.settings.syncLeftRight) {
-                this.expandBoth();
-              } else {
-                this.expandRight();
-              }
-            }
-          }, this.settings.sidebarExpandDelay);
-        }
-
-        setTimeout(() => {
-          if (!this.isHoveringRight) {
-            this.collapseRight();
-          }
-        }, this.settings.sidebarDelay);
-      }
-    }
-    
-    // Handle left sidebar hover
-    if (this.settings.leftSidebar) {
-      if (!this.isHoveringLeft && this.leftSplit.collapsed && !this.isPinnedLeft) {
-        // Check if mouse is in the left trigger area
-        this.isHoveringLeft = mouseX <= this.settings.leftSideBarPixelTrigger;
-
-        if (this.isHoveringLeft && this.leftSplit.collapsed) {
-          setTimeout(() => {
-            if (this.isHoveringLeft) {
-              if (this.settings.syncLeftRight) {
-                this.expandBoth();
-              } else {
-                this.expandLeft();
-              }
-            }
-          }, this.settings.sidebarExpandDelay);
-        }
-
-        setTimeout(() => {
-          if (!this.isHoveringLeft) {
-            this.collapseLeft();
-          }
-        }, this.settings.sidebarDelay);
-      }
-    }
-  };
-
   rightSplitMouseLeaveHandler = (event: MouseEvent) => {
     // Don't process if we're leaving to the tab header container or a menu
     const target = event.relatedTarget as HTMLElement;
