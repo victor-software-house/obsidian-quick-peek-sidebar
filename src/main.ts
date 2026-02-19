@@ -58,6 +58,7 @@ export default class OpenSidebarHover extends Plugin {
   leftRibbon: ExtendedWorkspaceRibbon;
   leftSplitMouseEnterHandler: () => void;
   rightSplitMouseEnterHandler: () => void;
+  private rightTriggerZoneEl: HTMLElement | null = null;
   workspaceChangeTimeout: NodeJS.Timeout | null = null;
   
   // Double-click tracking variables
@@ -214,6 +215,34 @@ export default class OpenSidebarHover extends Plugin {
       if (this.rightSplit.resizeHandleEl) {
         attach(this.rightSplit.resizeHandleEl, "mouseenter", this.rightSplitMouseEnterHandler);
       }
+
+      // Programmatic trigger zone at the right edge of the workspace.
+      // Unlike the left sidebar (which has the always-visible left ribbon as a
+      // trigger), the right sidebar has no equivalent element. When collapsed,
+      // its containerEl is effectively hidden, so mouseenter never fires. This
+      // thin absolutely-positioned div acts as the right-edge hover target.
+      //
+      // position:absolute requires the parent to be a positioning context.
+      // Obsidian's workspace container is position:static by default, so the
+      // trigger zone would anchor to a distant ancestor instead. Ensure the
+      // container is position:relative before appending.
+      const wsContainer = this.app.workspace.containerEl;
+      if (getComputedStyle(wsContainer).position === 'static') {
+        wsContainer.style.position = 'relative';
+      }
+      this.rightTriggerZoneEl = document.createElement('div');
+      this.rightTriggerZoneEl.className = 'right-sidebar-trigger-zone';
+      this.rightTriggerZoneEl.style.cssText = `
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: ${this.settings.rightSideBarPixelTrigger}px;
+        height: 100%;
+        z-index: 1;
+        pointer-events: auto;
+      `;
+      wsContainer.appendChild(this.rightTriggerZoneEl);
+      attach(this.rightTriggerZoneEl, 'mouseenter', this.rightSplitMouseEnterHandler);
     }
 
     // Left ribbon: triggers left expand
@@ -256,6 +285,12 @@ export default class OpenSidebarHover extends Plugin {
       element.removeEventListener(type, handler);
     });
     this.manualEvents = [];
+
+    // Remove trigger zone element
+    if (this.rightTriggerZoneEl) {
+      this.rightTriggerZoneEl.remove();
+      this.rightTriggerZoneEl = null;
+    }
     
     // Clean up hover classes
     if (this.rightSplit?.containerEl) {
@@ -314,13 +349,28 @@ export default class OpenSidebarHover extends Plugin {
       
       // Collapse sidebars when mouse enters the root editing area
       const rootSplitEl = (this.app.workspace.rootSplit as unknown as ExtendedWorkspaceSplit).containerEl;
-      this.registerDomEvent(rootSplitEl, 'mouseenter', () => {
-        if (this.settings.leftSidebar && !this.isPinnedLeft) {
+      this.registerDomEvent(rootSplitEl, 'mouseenter', (event: MouseEvent) => {
+        // In overlay mode the expanded sidebar sits on top of rootSplit as a
+        // sibling element, so rootSplit still receives mouseenter even though
+        // the mouse is visually over the sidebar. Use elementFromPoint to
+        // verify the pointer isn't actually over a sidebar before collapsing.
+        const el = document.elementFromPoint(event.clientX, event.clientY);
+
+        const overLeft = el && (
+          this.leftSplit?.containerEl?.contains(el) ||
+          this.leftRibbon?.containerEl?.contains(el)
+        );
+        const overRight = el && (
+          this.rightSplit?.containerEl?.contains(el) ||
+          this.rightTriggerZoneEl?.contains(el)
+        );
+
+        if (this.settings.leftSidebar && !this.isPinnedLeft && !overLeft) {
           this.isHoveringLeft = false;
           this.leftSplit?.containerEl?.removeClass('hovered');
           this.collapseLeft();
         }
-        if (this.settings.rightSidebar && !this.isPinnedRight) {
+        if (this.settings.rightSidebar && !this.isPinnedRight && !overRight) {
           this.isHoveringRight = false;
           this.rightSplit?.containerEl?.removeClass('hovered');
           this.collapseRight();
@@ -505,12 +555,14 @@ export default class OpenSidebarHover extends Plugin {
   }
   
   rightSplitMouseLeaveHandler = (event: MouseEvent) => {
-    // Don't process if we're leaving to the tab header container or a menu
+    // Don't process if we're leaving to a related right-sidebar element
     const target = event.relatedTarget as HTMLElement;
     if (target && (target.closest('.workspace-tab-header-container-inner') ||
                   (target.hasClass && target.hasClass('menu')) ||
                   target?.classList?.contains('menu') ||
-                  target?.closest('.menu'))) {
+                  target?.closest('.menu') ||
+                  this.rightTriggerZoneEl?.contains(target) ||
+                  this.rightSplit?.containerEl?.contains(target))) {
       return;
     }
 
@@ -539,12 +591,14 @@ export default class OpenSidebarHover extends Plugin {
   };
 
   leftSplitMouseLeaveHandler = (event: MouseEvent) => {
-    // Don't process if we're leaving to the tab header container or a menu
+    // Don't process if we're leaving to a related left-sidebar element
     const target = event.relatedTarget as HTMLElement;
     if (target && (target.closest('.workspace-tab-header-container-inner') ||
                   (target.hasClass && target.hasClass('menu')) ||
                   target?.classList?.contains('menu') ||
-                  target?.closest('.menu'))) {
+                  target?.closest('.menu') ||
+                  this.leftRibbon?.containerEl?.contains(target) ||
+                  this.leftSplit?.containerEl?.contains(target))) {
       return;
     }
 
